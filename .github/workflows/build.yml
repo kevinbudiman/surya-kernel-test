@@ -82,6 +82,7 @@ jobs:
             kernel-commit.txt
             patch.diff
           if-no-files-found: warn
+          include-hidden-files: true   # .config
 
       - name: Upload log kalau gagal
         if: failure()
@@ -104,18 +105,18 @@ jobs:
       - name: Kumpulkan file
         run: |
           mkdir dist
+          find art -type f | sort
+          # salin kalau ada; jangan gagal karena satu file hilang
+          cpif() { if [ -f "$1" ]; then cp "$1" "$2"; fi; }
           for v in stock vbatmask; do
             d=art/surya-$v
-            [ -f $d/kernel/out/arch/arm64/boot/Image.gz ] || continue
-            cp $d/kernel/out/arch/arm64/boot/Image.gz dist/Image-$v.gz
-            cp $d/kernel/out/.config dist/config-$v.txt
-            cp $d/version.txt dist/version-$v.txt
+            cpif $d/kernel/out/arch/arm64/boot/Image.gz dist/Image-$v.gz
+            cpif $d/kernel/out/.config dist/config-$v.txt
+            cpif $d/version.txt dist/version-$v.txt
+            cpif art/build-log-$v/build.log dist/build-$v.log
           done
-          [ -f art/surya-vbatmask/patch.diff ] && cp art/surya-vbatmask/patch.diff dist/
-          [ -f art/surya-stock/kernel-commit.txt ] && cp art/surya-stock/kernel-commit.txt dist/
-          for v in stock vbatmask; do
-            [ -f art/build-log-$v/build.log ] && cp art/build-log-$v/build.log dist/build-$v.log
-          done
+          cpif art/surya-vbatmask/patch.diff dist/patch.diff
+          cpif art/surya-stock/kernel-commit.txt dist/kernel-commit.txt
           (cd dist && sha256sum * > SHA256SUMS)
           ls -l dist
       - name: Release
