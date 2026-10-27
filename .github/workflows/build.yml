@@ -1,0 +1,91 @@
+name: build surya kernel
+
+# Build kernel LineageOS surya (lineage-22.2) dengan config persis dari HP
+# (surya_running.config = /proc/config.gz), dua varian sekaligus:
+#   stock   : tanpa patch  -> membuktikan toolchain menghasilkan kernel yang boot
+#   vbatmask: mask alarm VBAT_INSERT di bq2597x -> uji perbaikan storm IRQ
+# Hasil: artifact berisi Image.gz + .config + versi, untuk dipasang ke boot image
+# lewat magiskboot di PC.
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: branch kernel LineageOS
+        default: lineage-22.2
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [stock, vbatmask]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang-19 lld-19 llvm-19 binutils-aarch64-linux-gnu \
+            bc bison flex libssl-dev libelf-dev cpio python3 make git
+
+      - name: Source kernel
+        run: |
+          git clone --depth=1 -b "${{ inputs.branch || 'lineage-22.2' }}" \
+            https://github.com/LineageOS/android_kernel_xiaomi_surya kernel
+          git -C kernel log -1 --format='%H %cd %s' | tee kernel-commit.txt
+
+      - name: Patch (vbatmask)
+        if: matrix.variant == 'vbatmask'
+        working-directory: kernel
+        run: |
+          f=drivers/power/supply/ti/bq2597x_charger.c
+          sed -i 's/bq2597x_set_alarm_int_mask(bq, ADC_DONE$/bq2597x_set_alarm_int_mask(bq, ADC_DONE | VBAT_INSERT/' $f
+          # gagal kalau baris target tidak ketemu (source berubah)
+          grep -n 'bq2597x_set_alarm_int_mask(bq, ADC_DONE | VBAT_INSERT' $f
+          git diff | tee ../patch.diff
+
+      - name: Config
+        working-directory: kernel
+        run: |
+          mkdir -p out
+          cp ../surya_running.config out/.config
+          scripts/config --file out/.config --set-str LOCALVERSION "-${{ matrix.variant }}"
+          make O=out ARCH=arm64 CC=clang-19 LD=ld.lld-19 HOSTCC=clang-19 \
+            CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- \
+            olddefconfig
+          # laporkan opsi yang berubah dibanding config HP (seharusnya cuma LOCALVERSION)
+          diff <(grep '^CONFIG_' ../surya_running.config | sort) \
+               <(grep '^CONFIG_' out/.config | sort) || true
+
+      - name: Build Image.gz
+        working-directory: kernel
+        run: |
+          make -j"$(nproc)" O=out ARCH=arm64 \
+            CC=clang-19 LD=ld.lld-19 HOSTCC=clang-19 HOSTLD=ld.lld-19 \
+            HOSTCFLAGS="-fuse-ld=lld -Wno-unused-command-line-argument" \
+            CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- \
+            Image.gz 2>&1 | tee ../build.log | grep -E 'error|warning: .*bq2597x|Image.gz' || true
+          test -f out/arch/arm64/boot/Image.gz
+          strings out/vmlinux | grep -m1 'Linux version' | tee ../version.txt
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: surya-${{ matrix.variant }}
+          path: |
+            kernel/out/arch/arm64/boot/Image.gz
+            kernel/out/.config
+            version.txt
+            kernel-commit.txt
+            patch.diff
+          if-no-files-found: warn
+
+      - name: Upload log kalau gagal
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ matrix.variant }}
+          path: build.log
