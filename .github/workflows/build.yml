@@ -89,3 +89,39 @@ jobs:
         with:
           name: build-log-${{ matrix.variant }}
           path: build.log
+
+  # Terbitkan sebagai Release supaya Image.gz bisa diunduh tanpa login
+  release:
+    needs: build
+    if: always()
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: art
+      - name: Kumpulkan file
+        run: |
+          mkdir dist
+          for v in stock vbatmask; do
+            d=art/surya-$v
+            [ -f $d/kernel/out/arch/arm64/boot/Image.gz ] || continue
+            cp $d/kernel/out/arch/arm64/boot/Image.gz dist/Image-$v.gz
+            cp $d/kernel/out/.config dist/config-$v.txt
+            cp $d/version.txt dist/version-$v.txt
+          done
+          [ -f art/surya-vbatmask/patch.diff ] && cp art/surya-vbatmask/patch.diff dist/
+          [ -f art/surya-stock/kernel-commit.txt ] && cp art/surya-stock/kernel-commit.txt dist/
+          for v in stock vbatmask; do
+            [ -f art/build-log-$v/build.log ] && cp art/build-log-$v/build.log dist/build-$v.log
+          done
+          (cd dist && sha256sum * > SHA256SUMS)
+          ls -l dist
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=build-${{ github.run_number }}
+          gh release create "$tag" dist/* --repo "${{ github.repository }}" \
+            --title "surya kernel $tag" --notes "Run ${{ github.run_id }} · stock + vbatmask" --prerelease
